@@ -1,0 +1,1034 @@
+
+---
+# Source: hadoop/templates/hdfs-dn-pdb.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: hadoop-hadoop-hdfs-dn
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: hdfs-dn
+spec:
+  selector:
+    matchLabels:
+      app: hadoop
+      release: hadoop
+      component: hdfs-dn
+  minAvailable: 1
+---
+# Source: hadoop/templates/hdfs-nn-pdb.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: hadoop-hadoop-hdfs-nn
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: hdfs-nn
+spec:
+  selector:
+    matchLabels:
+      app: hadoop
+      release: hadoop
+      component: hdfs-nn
+  minAvailable: 1
+---
+# Source: hadoop/templates/yarn-nm-pdb.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: hadoop-hadoop-yarn-nm
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: yarn-nm
+spec:
+  selector:
+    matchLabels:
+      app: hadoop
+      release: hadoop
+      component: yarn-nm
+  minAvailable: 1
+---
+# Source: hadoop/templates/yarn-rm-pdb.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: hadoop-hadoop-yarn-rm
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: yarn-rm
+spec:
+  selector:
+    matchLabels:
+      app: hadoop
+      release: hadoop
+      component: yarn-rm
+  minAvailable: 1
+---
+# Source: hadoop/templates/hadoop-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hadoop-hadoop
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+data:
+  bootstrap.sh: |
+    #!/bin/bash
+
+    : ${HADOOP_PREFIX:=/opt/hadoop}
+
+    . $HADOOP_PREFIX/etc/hadoop/hadoop-env.sh
+
+    # Directory to find config artifacts
+    CONFIG_DIR="/tmp/hadoop-config"
+
+    # Copy config files from volume mount
+
+    for f in slaves core-site.xml hdfs-site.xml mapred-site.xml yarn-site.xml; do
+      if [[ -e ${CONFIG_DIR}/$f ]]; then
+        cp ${CONFIG_DIR}/$f $HADOOP_PREFIX/etc/hadoop/$f
+      else
+        echo "ERROR: Could not find $f in $CONFIG_DIR"
+        exit 1
+      fi
+    done
+
+    # installing libraries if any - (resource urls added comma separated to the ACP system variable)
+    cd $HADOOP_PREFIX/share/hadoop/common ; for cp in ${ACP//,/ }; do  echo == $cp; curl -LO $cp ; done; cd -
+
+    if [ -n "$POM_FILE" ]; then
+        mvn-install.sh "$POM_FILE"
+    fi
+
+    if [[ "${HOSTNAME}" =~ "hdfs-nn" ]]; then
+      mkdir -p /root/hdfs/namenode
+      $HADOOP_PREFIX/bin/hdfs namenode -format -force -nonInteractive
+      $HADOOP_PREFIX/sbin/hadoop-daemon.sh start namenode
+    fi
+
+    if [[ "${HOSTNAME}" =~ "hdfs-dn" ]]; then
+      mkdir -p /root/hdfs/datanode
+
+      #  wait up to 60 seconds for namenode 
+      (while [[ $count -lt 30 && -z `curl -sf http://hadoop-hadoop-hdfs-nn:50070` ]]; do ((count=count+1)) ; echo "Waiting for hadoop-hadoop-hdfs-nn" ; sleep 2; done && [[ $count -lt 15 ]])
+      [[ $? -ne 0 ]] && echo "Timeout waiting for hdfs-nn, exiting." && exit 1
+
+      $HADOOP_PREFIX/sbin/hadoop-daemon.sh start datanode
+    fi
+
+    if [[ "${HOSTNAME}" =~ "yarn-rm" ]]; then
+      cp ${CONFIG_DIR}/start-yarn-rm.sh $HADOOP_PREFIX/sbin/
+      cd $HADOOP_PREFIX/sbin
+      chmod +x start-yarn-rm.sh
+      ./start-yarn-rm.sh
+    fi
+
+    if [[ "${HOSTNAME}" =~ "yarn-nm" ]]; then
+      sed -i '/<\/configuration>/d' $HADOOP_PREFIX/etc/hadoop/yarn-site.xml
+      cat >> $HADOOP_PREFIX/etc/hadoop/yarn-site.xml <<- EOM
+      <property>
+        <name>yarn.nodemanager.resource.memory-mb</name>
+        <value>${MY_MEM_LIMIT:-2048}</value>
+      </property>
+
+      <property>
+        <name>yarn.nodemanager.resource.cpu-vcores</name>
+        <value>${MY_CPU_LIMIT:-2}</value>
+      </property>
+    EOM
+      echo '</configuration>' >> $HADOOP_PREFIX/etc/hadoop/yarn-site.xml
+      cp ${CONFIG_DIR}/start-yarn-nm.sh $HADOOP_PREFIX/sbin/
+      cd $HADOOP_PREFIX/sbin
+      chmod +x start-yarn-nm.sh
+
+      #  wait up to 30 seconds for resourcemanager
+      (while [[ $count -lt 15 && -z `curl -sf http://hadoop-hadoop-yarn-rm:8088/ws/v1/cluster/info` ]]; do ((count=count+1)) ; echo "Waiting for hadoop-hadoop-yarn-rm" ; sleep 2; done && [[ $count -lt 15 ]])
+      [[ $? -ne 0 ]] && echo "Timeout waiting for yarn-rm, exiting." && exit 1
+
+      ./start-yarn-nm.sh
+    fi
+
+    if [[ $1 == "-d" ]]; then
+      until find ${HADOOP_PREFIX}/logs -mmin -1 | egrep -q '.*'; echo "`date`: Waiting for logs..." ; do sleep 2 ; done
+      tail -F ${HADOOP_PREFIX}/logs/* &
+      while true; do sleep 1000; done
+    fi
+
+    if [[ $1 == "-bash" ]]; then
+      /bin/bash
+    fi
+
+  core-site.xml: |
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+            <name>fs.defaultFS</name>
+            <value>hdfs://hadoop-hadoop-hdfs-nn:9000/</value>
+            <description>NameNode URI</description>
+        </property>
+    </configuration>
+
+  hdfs-site.xml: |
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>dfs.datanode.use.datanode.hostname</name>
+        <value>true</value>
+      </property>
+
+      <property>
+        <name>dfs.client.use.datanode.hostname</name>
+        <value>true</value>
+      </property>
+
+      <property>
+        <name>dfs.replication</name>
+          <value>3</value>
+      </property>
+
+      <property>
+        <name>dfs.datanode.data.dir</name>
+        <value>file:///root/hdfs/datanode</value>
+        <description>DataNode directory</description>
+      </property>
+
+      <property>
+        <name>dfs.namenode.name.dir</name>
+        <value>file:///root/hdfs/namenode</value>
+        <description>NameNode directory for namespace and transaction logs storage.</description>
+      </property>
+
+      <property>
+        <name>dfs.namenode.datanode.registration.ip-hostname-check</name>
+        <value>false</value>
+      </property>
+
+      <!-- Bind to all interfaces -->
+      <property>
+        <name>dfs.namenode.rpc-bind-host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>dfs.namenode.servicerpc-bind-host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <!-- /Bind to all interfaces -->
+      
+    </configuration>
+
+  mapred-site.xml: |
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+
+    <configuration>
+      <property>
+        <name>mapreduce.framework.name</name>
+        <value>yarn</value>
+      </property>
+      <property>
+        <name>mapreduce.jobhistory.address</name>
+        <value>hadoop-hadoop-yarn-rm-0.hadoop-hadoop-yarn-rm.default.svc.cluster.local:10020</value>
+      </property>
+      <property>
+        <name>mapreduce.jobhistory.webapp.address</name>
+        <value>hadoop-hadoop-yarn-rm-0.hadoop-hadoop-yarn-rm.default.svc.cluster.local:19888</value>
+      </property>
+    </configuration>
+
+  slaves: |
+    localhost
+
+  start-yarn-nm.sh: |
+    #!/usr/bin/env bash
+
+    # Licensed to the Apache Software Foundation (ASF) under one or more
+    # contributor license agreements.  See the NOTICE file distributed with
+    # this work for additional information regarding copyright ownership.
+    # The ASF licenses this file to You under the Apache License, Version 2.0
+    # (the "License"); you may not use this file except in compliance with
+    # the License.  You may obtain a copy of the License at
+    #
+    #     http://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing, software
+    # distributed under the License is distributed on an "AS IS" BASIS,
+    # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    # See the License for the specific language governing permissions and
+    # limitations under the License.
+
+
+    # Start all yarn daemons.  Run this on master node.
+
+    echo "starting yarn daemons"
+
+    bin=`dirname "${BASH_SOURCE-$0}"`
+    bin=`cd "$bin"; pwd`
+
+    DEFAULT_LIBEXEC_DIR="$bin"/../libexec
+    HADOOP_LIBEXEC_DIR=${HADOOP_LIBEXEC_DIR:-$DEFAULT_LIBEXEC_DIR}
+    . $HADOOP_LIBEXEC_DIR/yarn-config.sh
+
+    # start resourceManager
+    # "$bin"/yarn-daemon.sh --config $YARN_CONF_DIR  start resourcemanager
+    # start nodeManager
+    "$bin"/yarn-daemon.sh --config $YARN_CONF_DIR  start nodemanager
+    # start proxyserver
+    #"$bin"/yarn-daemon.sh --config $YARN_CONF_DIR  start proxyserver
+
+  start-yarn-rm.sh: |
+    #!/usr/bin/env bash
+
+    # Licensed to the Apache Software Foundation (ASF) under one or more
+    # contributor license agreements.  See the NOTICE file distributed with
+    # this work for additional information regarding copyright ownership.
+    # The ASF licenses this file to You under the Apache License, Version 2.0
+    # (the "License"); you may not use this file except in compliance with
+    # the License.  You may obtain a copy of the License at
+    #
+    #     http://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing, software
+    # distributed under the License is distributed on an "AS IS" BASIS,
+    # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    # See the License for the specific language governing permissions and
+    # limitations under the License.
+
+
+    # Start all yarn daemons.  Run this on master node.
+
+    echo "starting yarn daemons"
+
+    bin=`dirname "${BASH_SOURCE-$0}"`
+    bin=`cd "$bin"; pwd`
+
+    DEFAULT_LIBEXEC_DIR="$bin"/../libexec
+    HADOOP_LIBEXEC_DIR=${HADOOP_LIBEXEC_DIR:-$DEFAULT_LIBEXEC_DIR}
+    . $HADOOP_LIBEXEC_DIR/yarn-config.sh
+
+    # start resourceManager
+    "$bin"/yarn-daemon.sh --config $YARN_CONF_DIR  start resourcemanager
+    # start nodeManager
+    # "$bin"/yarn-daemons.sh --config $YARN_CONF_DIR  start nodemanager
+    # start proxyserver
+    "$bin"/yarn-daemon.sh --config $YARN_CONF_DIR  start proxyserver
+
+  yarn-site.xml: |
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+
+    <configuration>
+      <property>
+        <name>yarn.resourcemanager.hostname</name>
+        <value>hadoop-hadoop-yarn-rm</value>
+      </property>
+
+      <property>
+        <name>yarn.nodemanager.delete.debug-delay-sec</name>
+        <value>10000000</value>
+      </property>
+
+      <property>
+        <name>yarn.nodemanager.resource.memory-mb</name>
+        <value>30720</value>
+      </property>
+      
+      <!-- Bind to all interfaces -->
+      <property>
+        <name>yarn.resourcemanager.bind-host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.bind-host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>yarn.timeline-service.bind-host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <!-- /Bind to all interfaces -->
+
+      <property>
+        <name>yarn.nodemanager.vmem-check-enabled</name>
+        <value>true</value>
+      </property>
+
+      <property>
+          <name>yarn.nodemanager.pmem-check-enabled</name>
+          <value>true</value>
+      </property>
+      
+      <property>
+          <name>yarn.scheduler.minimum-allocation-mb</name>
+          <value>384</value>
+      </property>
+
+      <property>
+          <name>yarn.scheduler.maximum-allocation-mb</name>
+          <value>12288</value>
+      </property>
+
+      <property>
+          <name>yarn.scheduler.maximum-allocation-vcores</name>
+          <value>3</value>
+      </property>
+
+      <property>
+        <name>yarn.nodemanager.aux-services</name>
+        <value>mapreduce_shuffle,spark_shuffle</value>
+      </property>
+
+      <property>
+        <name>yarn.nodemanager.aux-services.mapreduce_shuffle.class</name>
+        <value>org.apache.hadoop.mapred.ShuffleHandler</value>
+      </property>
+
+      <property>
+        <name>yarn.nodemanager.aux-services.spark_shuffle.class</name>
+        <value>org.apache.spark.network.yarn.YarnShuffleService</value>
+      </property>
+
+      <property>
+        <description>List of directories to store localized files in.</description>
+        <name>yarn.nodemanager.local-dirs</name>
+        <value>/var/lib/hadoop-yarn/cache/${user.name}/nm-local-dir</value>
+      </property>
+
+      <property>
+        <description>Where to store container logs.</description>
+        <name>yarn.nodemanager.log-dirs</name>
+        <value>/var/log/hadoop-yarn/containers</value>
+      </property>
+
+      <property>
+        <description>Where to aggregate logs to.</description>
+        <name>yarn.nodemanager.remote-app-log-dir</name>
+        <value>/var/log/hadoop-yarn/apps</value>
+      </property>
+
+      <property>
+        <name>yarn.log-aggregation-enable</name>
+        <value>true</value>
+      </property>
+
+      <property>
+        <name>yarn.nodemanager.log-aggregation.roll-monitoring-interval-seconds</name>
+        <value>3600</value>
+      </property>
+
+      <property>
+        <name>yarn.application.classpath</name>
+        <value>
+          /opt/hadoop/etc/hadoop,
+          /opt/hadoop/share/hadoop/common/*,
+          /opt/hadoop/share/hadoop/common/lib/*,
+          /opt/hadoop/share/hadoop/hdfs/*,
+          /opt/hadoop/share/hadoop/hdfs/lib/*,
+          /opt/hadoop/share/hadoop/mapreduce/*,
+          /opt/hadoop/share/hadoop/mapreduce/lib/*,
+          /opt/hadoop/share/hadoop/yarn/*,
+          /opt/hadoop/share/hadoop/yarn/lib/*,
+          /opt/hadoop/share/user/*
+        </value>
+      </property>
+    </configuration>
+---
+# Source: hadoop/templates/yarn-nm-pom-xml.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hadoop-hadoop-nm-pom-xml
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+data:
+  pom.xml: |-
+    <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+        <modelVersion>4.0.0</modelVersion>
+        <groupId>com.neighborly.data</groupId>
+        <artifactId>spark-history-additional-jars</artifactId>
+        <version>1.0-SNAPSHOT</version>
+        <name>Spark-History-Additional-Jars</name>
+        <url>http://maven.apache.org</url>
+        <dependencies>
+            <!-- https://mvnrepository.com/artifact/org.apache.hadoop/hadoop-aws -->
+            <dependency>
+                <groupId>org.apache.hadoop</groupId>
+                <artifactId>hadoop-aws</artifactId>
+                <version>2.8.5</version>
+            </dependency>
+            <!-- https://mvnrepository.com/artifact/com.amazonaws/aws-java-sdk-s3 -->
+            <dependency>
+                <groupId>com.amazonaws</groupId>
+                <artifactId>aws-java-sdk-s3</artifactId>
+                <version>1.10.6</version>
+            </dependency>
+            <dependency>
+                <groupId>com.databricks</groupId>
+                <artifactId>spark-csv_2.11</artifactId>
+                <version>1.5.0</version>
+            </dependency>
+            <dependency>
+                <groupId>org.postgresql</groupId>
+                <artifactId>postgresql</artifactId>
+                <version>42.2.5</version>
+            </dependency>
+        </dependencies>
+        <build>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <version>3.1.1</version>
+                    <executions>
+                        <execution>
+                            <id>copy-dependencies</id>
+                            <goals>
+                                <goal>copy-dependencies</goal>
+                            </goals>
+                            <configuration>
+                                <outputDirectory>/opt/hadoop/share/user</outputDirectory>
+                                <overWriteReleases>false</overWriteReleases>
+                                <overWriteSnapshots>false</overWriteSnapshots>
+                                <overWriteIfNewer>true</overWriteIfNewer>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </build>
+    </project>
+---
+# Source: hadoop/templates/hdfs-dn-svc.yaml
+# A headless service to create DNS records
+apiVersion: v1
+kind: Service
+metadata:
+  name: hadoop-hadoop-hdfs-dn
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: hdfs-dn
+spec:
+  ports:
+  - name: dfs
+    port: 9000
+    protocol: TCP
+  - name: webhdfs
+    port: 50075
+  clusterIP: None
+  selector:
+    app: hadoop
+    release: hadoop
+    component: hdfs-dn
+---
+# Source: hadoop/templates/hdfs-nn-svc.yaml
+# A headless service to create DNS records
+apiVersion: v1
+kind: Service
+metadata:
+  name: hadoop-hadoop-hdfs-nn
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: hdfs-nn
+spec:
+  ports:
+  - name: dfs
+    port: 9000
+    protocol: TCP
+  - name: webhdfs
+    port: 50070
+  clusterIP: None
+  selector:
+    app: hadoop
+    release: hadoop
+    component: hdfs-nn
+---
+# Source: hadoop/templates/yarn-nm-svc.yaml
+# A headless service to create DNS records
+apiVersion: v1
+kind: Service
+metadata:
+  name: hadoop-hadoop-yarn-nm
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: yarn-nm
+spec:
+  ports:
+  - port: 8088
+    name: web
+  - port: 8082
+    name: web2
+  - port: 8040
+    name: localizer
+  - port: 8041
+    name: nm
+  - port: 8042
+    name: api
+  - port: 45454
+    name: cm
+  clusterIP: None
+  selector:
+    app: hadoop
+    release: hadoop
+    component: yarn-nm
+---
+# Source: hadoop/templates/yarn-rm-svc.yaml
+# A headless service to create DNS records
+apiVersion: v1
+kind: Service
+metadata:
+  name: hadoop-hadoop-yarn-rm
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: yarn-rm
+spec:
+  ports:
+  - port: 8030
+    name: scheduler
+  - port: 8031
+    name: resource-trkr
+  - port: 8032
+    name: appmgr
+  - port: 8033
+    name: admin
+  clusterIP: None
+  selector:
+    app: hadoop
+    release: hadoop
+    component: yarn-rm
+---
+# Source: hadoop/templates/yarn-ui-svc.yaml
+# Service to access the yarn web ui
+apiVersion: v1
+kind: Service
+metadata:
+  name: hadoop-hadoop-yarn-ui
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: yarn-ui
+spec:
+  ports:
+  - port: 8088
+    name: web
+  selector:
+    app: hadoop
+    component: yarn-rm
+---
+# Source: hadoop/templates/hdfs-dn-statefulset.yaml
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: hadoop-hadoop-hdfs-dn
+  annotations:
+    checksum/config: 7becbc65d129671de3d1b9d337a0f14dcc133040688bf651d7b67a8665d8acab
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: hdfs-dn
+spec:
+  serviceName: hadoop-hadoop-hdfs-dn
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: hadoop
+        release: hadoop
+        component: hdfs-dn
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app:  hadoop
+                  release: "hadoop"
+                  component: hdfs-dn
+      terminationGracePeriodSeconds: 0
+      imagePullSecrets:
+        - name: regcred
+      containers:
+      - name: hdfs-dn
+        image: dockerregistry.mgmt.aws.neighborly.com:5000/neighborly/hadoop-datanode:0.0.3-hadoop2.8.5
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 9000
+          name: dfs
+        - containerPort: 50075
+          name: webhdfs
+        command:
+           - "/bin/bash"
+           - "/tmp/hadoop-config/bootstrap.sh"
+           - "-d"
+        resources:       
+          limits:
+            cpu: 1000m
+            memory: 2048Mi
+          requests:
+            cpu: 10m
+            memory: 256Mi
+          
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 50075
+          initialDelaySeconds: 15
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 50075
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+        - name: dfs
+          mountPath: /root/hdfs/datanode
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: hadoop-hadoop
+      - name: dfs        
+        emptyDir: {}
+---
+# Source: hadoop/templates/hdfs-nn-statefulset.yaml
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: hadoop-hadoop-hdfs-nn
+  annotations:
+    checksum/config: 7becbc65d129671de3d1b9d337a0f14dcc133040688bf651d7b67a8665d8acab
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: hdfs-nn
+spec:
+  serviceName: hadoop-hadoop-hdfs-nn
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: hadoop
+        release: hadoop
+        component: hdfs-nn
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app:  hadoop
+                  release: "hadoop"
+                  component: hdfs-nn
+      terminationGracePeriodSeconds: 0
+      imagePullSecrets:
+        - name: regcred
+      containers:
+      - name: hdfs-nn
+        image: dockerregistry.mgmt.aws.neighborly.com:5000/neighborly/hadoop-namenode:0.0.3-hadoop2.8.5
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 9000
+          name: dfs
+        - containerPort: 50070
+          name: webhdfs
+        - containerPort: 8020
+          name: hdfs
+        env:
+        - name: CLUSTER_NAME
+          value: yarn
+        command:
+        - "/bin/bash"
+        - "/tmp/hadoop-config/bootstrap.sh"
+        - "-d"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2048Mi
+          requests:
+            cpu: 10m
+            memory: 256Mi
+          
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 50070
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 50070
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+        - name: dfs
+          mountPath: /root/hdfs/namenode
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: hadoop-hadoop
+      - name: dfs        
+        emptyDir: {}
+---
+# Source: hadoop/templates/yarn-nm-statefulset.yaml
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: hadoop-hadoop-yarn-nm
+  annotations:
+    checksum/config: 7becbc65d129671de3d1b9d337a0f14dcc133040688bf651d7b67a8665d8acab
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: yarn-nm
+spec:
+  serviceName: hadoop-hadoop-yarn-nm
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: hadoop
+        release: hadoop
+        component: yarn-nm
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app:  hadoop
+                  release: "hadoop"
+                  component: yarn-nm
+      terminationGracePeriodSeconds: 0
+      imagePullSecrets:
+        - name: regcred
+      containers:
+      - name: yarn-nm
+        image: dockerregistry.mgmt.aws.neighborly.com:5000/neighborly/hadoop-nodemanager:0.0.3-hadoop2.8.5
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8088
+          name: web
+        - containerPort: 8082
+          name: web2
+        - containerPort: 8040
+          name: localizer
+        - containerPort: 8041
+          name: nm
+        - containerPort: 8042
+          name: api
+        - containerPort: 45454
+          name: cm
+        command:
+           - "/bin/bash"
+           - "/tmp/hadoop-config/bootstrap.sh"
+           - "-d"
+        resources:
+          limits:
+            cpu: 8000m
+            memory: 32768Mi
+          requests:
+            cpu: 500m
+            memory: 2048Mi
+          
+        readinessProbe:
+          httpGet:
+            path: /node
+            port: 8042
+          initialDelaySeconds: 30
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /node
+            port: 8042
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        env:
+        - name: MY_CPU_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: yarn-nm
+              resource: limits.cpu
+              divisor: 1
+        - name: MY_MEM_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: yarn-nm
+              resource: limits.memory
+              divisor: 1M
+        - name: POM_FILE
+          value: /tmp/user-dependencies/nm/pom.xml
+        - name: YARN_HEAPSIZE
+          value: "1500"
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+        - name: user-dependencies-pom-xml
+          mountPath: /tmp/user-dependencies/nm
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: hadoop-hadoop
+      - name: user-dependencies-pom-xml
+        configMap:
+          name: hadoop-hadoop-nm-pom-xml
+---
+# Source: hadoop/templates/yarn-rm-statefulset.yaml
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: hadoop-hadoop-yarn-rm
+  annotations:
+    checksum/config: 7becbc65d129671de3d1b9d337a0f14dcc133040688bf651d7b67a8665d8acab
+  labels:
+    app: hadoop
+    chart: hadoop-1.0.8
+    release: hadoop
+    heritage: Tiller
+    component: yarn-rm
+spec:
+  serviceName: hadoop-hadoop-yarn-rm
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: hadoop
+        release: hadoop
+        component: yarn-rm
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app:  hadoop
+                  release: "hadoop"
+                  component: yarn-rm
+      terminationGracePeriodSeconds: 0
+      imagePullSecrets:
+        - name: regcred
+      containers:
+      - name: yarn-rm
+        image: dockerregistry.mgmt.aws.neighborly.com:5000/neighborly/hadoop-resourcemanager:0.0.3-hadoop2.8.5
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8088
+          name: web
+        - containerPort: 8030
+          name: scheduler
+        - containerPort: 8031
+          name: resource-trkr
+        - containerPort: 8032
+          name: appmgr
+        - containerPort: 8033
+          name: admin
+        command:
+           - "/bin/bash"
+           - "/tmp/hadoop-config/bootstrap.sh"
+           - "-d"
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 4096Mi
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          
+        readinessProbe:
+          httpGet:
+            path: /ws/v1/cluster/info
+            port: 8088
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /ws/v1/cluster/info
+            port: 8088
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: hadoop-hadoop
+---
+# Source: hadoop/templates/yarn-rm-ingress.yaml
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: hadoop-hadoop-yarn-webui
+  labels:
+    heritage: "Tiller"
+    release: "hadoop"
+    chart: "hadoop-1.0.8"
+    component: yarn-ui
+spec:
+  tls:
+  - hosts:
+    - yarn.hadoop.nly-dev
+    secretName: hadoop-yarn-webui
+  rules:
+  - host: yarn.hadoop.nly-dev
+    http:
+      paths:
+      - path: "/"
+        backend:
+          serviceName: hadoop-hadoop-yarn-ui
+          servicePort: web
