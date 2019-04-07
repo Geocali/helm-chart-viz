@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-const loader = require('./loader')
 const parser = require('./parser')
 const processor = require('./processor')
 const translator = require('./translator')

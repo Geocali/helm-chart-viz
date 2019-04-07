@@ -1,4 +1,3 @@
-const portMatcher = require('./portMatcher')
 const selector = require('./selector')
 
 module.exports = {
@@ -6,27 +5,26 @@ module.exports = {
     const applicable = manifests.filter(m => ['Pod', 'Deployment', 'StatefulSet'].indexOf(m.kind) > -1)
     const matchLabels = manifest.spec.selector
     const related = selector.selectByLabels(applicable, matchLabels)
-    related.forEach(r => {
-      const rel = {
-        to: {
-          kind: manifest.kind,
-          name: manifest.metadata.name
-        },
-        predicate: 'deploy',
-        from: {
-          kind: r.kind,
-          name: r.metadata.name
+    if (manifest.spec.ports){
+      manifest.spec.ports.forEach(port => {
+        var container = selector.selectByPort(related,port)
+        if (container){
+          const rel = {
+            to: {
+              kind: manifest.kind,
+              adornments: [`${port.name||''} ${port.port||''} ${port.nodePort||''}`],
+              name: manifest.metadata.name
+            },
+            predicate: 'expose',
+            from: {
+              kind: container.kind,
+              adornments: [`${container.port.name||''} ${port.targetPort||''}`],
+              name: container.metadata.name
+            }
+          }
+          relationships.push(rel)
         }
-      }
-      
-      ports = portMatcher.match(manifest, r)
-      if (ports.length > 0) {
-        rel.to.adornments = ports.map(p => p.svcPort)
-        rel.from.adornments = ports.map(p => p.podPort)
-      }
-
-      relationships.push(rel)
-    })
+      });
+    }
   }
-  
 }

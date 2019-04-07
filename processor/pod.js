@@ -1,23 +1,13 @@
 
 module.exports = {
-  process: (manifests, manifest, relationships) => {
+  process: (manifests, manifest, relationships,o) => {
     const volumes = manifest.spec.volumes || manifest.spec.template.spec.volumes
-    if (!volumes) return
-
-    volumes.forEach(v => {
-      if (v.persistentVolumeClaim) {
-        relationships.push({
-          from: {
-            kind: manifest.kind,
-            name: manifest.metadata.name
-          },
-          predicate: 'persist to',
-          to: {
-            kind: 'PersistentVolumeClaim',
-            name: v.persistentVolumeClaim.claimName
-          }  
-        })
-      }
+    const containers = manifest.spec.containers || manifest.spec.template.spec.containers || []
+    containers.forEach(c=>{
+      o.containers.push({
+        name:c.name,
+        image:c.image
+      })
     })
   }  
 }

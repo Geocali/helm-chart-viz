@@ -3,6 +3,8 @@ const svc = require('./service')
 const configMap = require('./configMap')
 const ingress = require('./ingress')
 const pod = require('./pod')
+const pvc = require('./pvc')
+const route = require('./route')
 
 module.exports = {
   process: (manifests) => {
@@ -12,10 +14,12 @@ module.exports = {
     const objects = []
     manifests.forEach(m => {
 
-      objects.push({
+      var o = {
         kind: m.kind,
-        name: m.metadata.name
-      })
+        name: m.metadata.name,
+        notes: '',
+        containers: []
+      }
 
       switch(m.kind) {
         case 'PodDisruptionBudget':
@@ -23,6 +27,7 @@ module.exports = {
         break;
 
         case 'ConfigMap':
+        case 'Secret':
         configMap.process(manifests, m, relationships)
         break;
 
@@ -30,17 +35,25 @@ module.exports = {
         svc.process(manifests, m, relationships)
         break;
 
+        case 'PersistentVolumeClaim':
+        pvc.process(manifests, m, relationships,o)
+        break;
+
         case 'Ingress':
         ingress.process(manifests, m, relationships)
+        break;
+
+        case 'Route':
+        route.process(manifests, m, relationships)
         break;
 
         case 'Deployment':
         case 'StatefulSet':
         case 'Pod':
-        pod.process(manifests, m, relationships)
+        pod.process(manifests, m, relationships,o)
         break;
       }
-
+      objects.push(o)
     })
 
     return {
