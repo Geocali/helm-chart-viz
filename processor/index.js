@@ -47,7 +47,22 @@ module.exports = {
       objects: objects,
       relationships: relationships
     }
-  }
+  },
+
+  getAppName: manifests =>{
+    var appName = 'app'
+    manifests.some(m => {
+      if (m.metadata && m.metadata.labels && m.metadata.labels.app) {
+        appName = m.metadata.labels.app;
+        return true
+      }
+      if (m.kind === 'Namespace' && m.metadata && m.metadata.name) {
+        appName = m.metadata.name;
+        return true
+      }
+    });
+    return appName
+  }  
 }
 
 

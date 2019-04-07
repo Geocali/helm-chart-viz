@@ -1,17 +1,23 @@
+#!/usr/bin/env node
 const loader = require('./loader')
 const parser = require('./parser')
 const processor = require('./processor')
 const translator = require('./translator')
 const renderer = require('./renderer')
 
-if (process.argv.length < 4) {
-  console.log('Usage: node index.js <helm_release_name> <output_dir>')
-  process.exit(1)
-}
 
-const releaseName = process.argv[2]
-const manifestYaml = loader.load(releaseName)
-const manifests = parser.parse(manifestYaml)
-const data = processor.process(manifests)
-const puml = translator.translate(releaseName, data)
-renderer.render(releaseName, puml)
+var stdIn = process.openStdin()
+var manifestYaml = ''
+
+stdIn.on('data',d=>{
+  manifestYaml += d
+})
+
+stdIn.on('end',()=>{
+  const manifests = parser.parse(manifestYaml)
+  const appName = processor.getAppName(manifests)
+  const data = processor.process(manifests)
+  const puml = translator.translate(appName, data)
+  renderer.render(appName,puml)
+})
+
