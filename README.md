@@ -4,17 +4,26 @@ A tool to generate [PlantUML](http://plantuml.com/) component diagrams of deploy
 
 ## How-To
 
-1. Deploy your release with helm.
+Install helm-chart-2-plantuml
+```
+git clone https://github.com/fpolowood/helm-chart-viz.git
+cd helm-chart-viz
+npm install
+```
+
+Deploy your release with helm and generate the plantuml
 
 ```
 helm install --name <release_name> <chart_dir>
+helm get manifest <release_name> | node index.js
 ```
 
-2. Generate the PlantUML code and image. You must have Java installed and on your `$PATH`.
+Or, you can also generate from your chart before deploying
 
 ```
-node index.js <release_name> <output_dir>
+helm template helm-charts/mychart -f helm-charts/mychart/valus.yaml | node index.js
 ```
+
 
 Based on the original work from [neighborly](https://github.com/neighborly/helm-chart-viz)
 
