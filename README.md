@@ -21,7 +21,7 @@ helm get manifest <release_name> | node index.js
 Or, you can also generate from your chart before deploying
 
 ```
-helm template helm-charts/mychart -f helm-charts/mychart/valus.yaml | node index.js
+helm template helm-charts/mychart -f helm-charts/mychart/values.yaml | node index.js
 ```
 
 
