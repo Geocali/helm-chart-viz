@@ -1,4 +1,4 @@
-# helm-chart-viz
+# helm-chart-2-plantuml
 
 A tool to generate [PlantUML](http://plantuml.com/) component diagrams of deployed helm charts.
 
@@ -15,4 +15,6 @@ helm install --name <release_name> <chart_dir>
 ```
 node index.js <release_name> <output_dir>
 ```
+
+Based on the original work from [neighborly](https://github.com/neighborly/helm-chart-viz)
 
