@@ -5,7 +5,7 @@ module.exports = {
       manifest.spec.rules.forEach(r => {
         if (!r.http.paths) return
         r.http.paths.forEach(p => {
-          if (p.backend && p.backend.serviceName) {
+          if (p.backend && p.backend.service.name) {
             relationships.push({
               from: {
                 kind: manifest.kind,
@@ -14,7 +14,7 @@ module.exports = {
               predicate: 'serve traffic',
               to: {
                 kind: 'Service',
-                name: p.backend.serviceName
+                name: p.backend.service.name
               }
             })
           }

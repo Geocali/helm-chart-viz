@@ -4,6 +4,11 @@ module.exports = {
   selectByLabels: (manifests, matchLabels) => {
     // copy array
     let results = manifests.slice(0)
+    // if matchLabels is empty, there is no selector: return an empty list
+    if (matchLabels === undefined || matchLabels === null) {
+      return results.filter(m => false)
+    }
+    
     const keys = Object.keys(matchLabels)
 
     return results.filter(m => {
