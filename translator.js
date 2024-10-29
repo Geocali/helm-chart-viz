@@ -79,6 +79,9 @@ package ${releaseName} {
 }
 
 function slug(str){
+  if (str === undefined || str === null){
+    return str
+  }
   return str.replace(/-/g,'_')
 }
 function replaceBrackets(str){
